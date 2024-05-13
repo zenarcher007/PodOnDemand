@@ -1,0 +1,220 @@
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: nvidia
+handler: nvidia
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: podondemand-config
+  namespace: consolepod
+
+data:
+  serviceName: podondemand-ssh # Will look for service in same namespace
+  inactivityTimeoutSecs: '3600' # The pod will be destroyed if no network connections to the pod are present before this default timeout ends
+  inactivityPollFreq: '5' # Poll frequency, in seconds
+  podChoices: |
+    cpu: # These names must match the labels in "podManifests". These are the names you will specify in --type
+      displayName: "CPU Pod"
+      description: "Example cpu-configured pod"
+    cuda:
+      displayName: "GPU Pod"
+      description: "Example gpu-configured pod"
+
+  # Selects an existing PersistentVolume and PersistentVolumeClaim, by name.
+  # NOTE: Assumes that the PersistentVolume and PersistentVolumeClaim are named the same thing
+  storageChoices: |
+    yourstoragepv1: # These must be existing persistentvolumes, in which it will create subpaths. These are the names you will specify in --storage
+      description: "An existing persistentvolume name"
+    yourstoragepv2:
+      description: "Another existing persistentvolume name"
+
+  podManifests: |
+    cpu: # Example
+      kind: Pod
+      metadata:
+        name: cpu # This name is arbitrary, and can be anything
+        namespace: consolepod
+        labels:
+          app: cpu
+          is_user_container: "true" # TODO: In the future, implementing a NetworkPolicy could find user pods by this label. This is not used otherwise.
+      spec:
+        automountServiceAccountToken: false
+        containers:
+          - name: cpu
+            image: <YOUR IMAGE HERE> # Note: this image must run an sshd daemon. You will likely need to build a custom image for this.
+            imagePullPolicy: Always
+            args: [] # Note: An empty arg list is required. PodOnDemand will pass the username as the first argument and a base64-encoded authorized_keys entry as the second. The pod must be able to set up an environment based on this information.
+            ports:
+              - containerPort: 22
+            volumeMounts:
+              - mountPath: /home/DUMMY_USERNAME
+                name: podondemand-user-storage
+                subPath: DUMMY_VOLUME_PATH
+        volumes:
+          - name: podondemand-user-storage # This is the default storage. The volume and volume claim name will be overwritten at runtime if --storage is specified.
+            persistentVolumeClaim:
+              claimName: podondemand-user-storage
+        imagePullSecrets: # Note: this parameter is optional
+          - name: <your image pull secret>
+    cuda: # GPU Pod example
+      kind: Pod
+      metadata:
+        name: gpu
+        namespace: consolepod
+        labels:
+          app: gpu
+          is_user_container: "true"
+      spec:
+        automountServiceAccountToken: false
+        runtimeClassName: nvidia 
+        nodeSelector:
+          nvidia.com/gpu.product: <YOUR GPU>
+        containers:
+          - name: gpupod
+            image: <YOUR IMAGE HERE>
+            imagePullPolicy: Always
+            args: []
+            ports:
+              - containerPort: 22
+            volumeMounts:
+              - mountPath: /home/DUMMY_USERNAME
+                name: podondemand-user-storage
+                subPath: DUMMY_VOLUME_PATH
+            resources:
+              limits:
+                nvidia.com/gpu: 1
+        tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        volumes:
+          - name: podondemand-user-storage
+            persistentVolumeClaim:
+              claimName: podondemand-user-storage
+        imagePullSecrets: # Optional; if necessary
+          - name: <your registry secret>
+
+  
+# Set this to false if you want PodOnDemand to automatically read new storageChocices and podManifests configurations
+immutable: true 
+
+---
+# Service for Traefik Raw TCP Ingress into entrypoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: podondemand-ssh
+  namespace: consolepod
+#  annotations:
+#    traefik.ingress.kubernetes.io/router.entrypoints: tcp
+spec:
+  type: LoadBalancer
+  selector:
+    app: podondemand
+  ports:
+    - protocol: TCP
+      port: 30142
+      targetPort: 22
+      nodePort: 30142
+
+
+
+# These are the necessary RBAC permissions for scripts to be able to read and manipulate running pods
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  namespace: consolepod
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "pods", "services", "persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]  # Allow pod eviction
+- apiGroups: [""]
+  resources: ["pods", "persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["delete", "create", "patch"]  # Add/delete pods
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["delete", "create", "patch"]  # Add/delete services
+
+
+---
+# Define ClusterRoleBinding for ClusterRole permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: configmap-reader-binding
+  namespace: consolepod
+subjects:
+- kind: ServiceAccount
+  name: podondemand
+  namespace: consolepod
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+
+
+
+# Define new service account. I.e. a security group to give the container 
+# permissions to access the Kubernetes API under the mounted credentials
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: podondemand
+  namespace: consolepod
+
+---
+# The main PodOnDemand deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podondemand
+  namespace: consolepod
+  labels:
+    app: podondemand
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: podondemand
+  template:
+    metadata:
+      labels:
+        app: podondemand
+    spec:
+      serviceAccountName: podondemand
+      containers:
+        - name: podondemand
+          image: <PODONDEMAND IMAGE HERE>/library/podondemand
+          imagePullPolicy: Always
+          env:
+            - name: CONFIG_NAMESPACE
+              value: "consolepod"
+          volumeMounts:
+            - mountPath: /home/login/.ssh
+              name: podondemand-auth-keys
+            - mountPath: /home/login/logs
+              name: podondemand-logs
+
+      volumes:
+        - name: pod-manifest-volume
+          configMap:
+            name: podondemand-config
+        - name: podondemand-auth-keys
+          persistentVolumeClaim:
+            claimName: podondemand-auth-keys
+        - name: podondemand-logs
+          persistentVolumeClaim:
+            claimName: podondemand-logs
+      imagePullSecrets:
+        - name: harbor-registry-secret
+
+
+

@@ -1,0 +1,14 @@
+
+version: '3.3'    
+services:
+  cpu-pod:
+    image: <YOUR IMAGE>
+    build:
+      context: .
+      dockerfile: cpu/Dockerfile
+
+  cuda-pod:
+    image: <YOUR CUDA IMAGE>
+    build:
+      context: .
+      dockerfile: cuda/Dockerfile

@@ -1,0 +1,7 @@
+podChoices: |
+  cpu: # These names must match the labels in "podManifests" in "podondemand.yaml"
+    displayName: "CPU Pod"
+    description: "Example cpu-configured pod"
+  cuda:
+    displayName: "GPU Pod"
+    description: "Example gpu-configured pod"

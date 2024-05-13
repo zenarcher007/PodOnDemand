@@ -1,0 +1,5 @@
+storageChoices: |
+  yourstoragepv1:
+    description: "An existing persistentvolume name"
+  yourstoragepv2:
+    description: "Another existing persistentvolume name"
