@@ -1,5 +1,9 @@
 # PodOnDemand
-Kubernetes service for user SSH pods
+_This is a displayable copy of the software used internally at Knox College; currently, this may not be up to date, or may be lacking documentation_.
+
+<br><br>
+
+Kubernetes service for user-isolated containerized SSH environments
 
 
 
